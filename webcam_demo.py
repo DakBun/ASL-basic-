@@ -1,9 +1,9 @@
-"""Live ASL letter recognition demo using a webcam + your Roboflow-hosted model.
+"""Live ASL letter classification demo using a webcam + your Roboflow-hosted model.
 
 Setup:
     pip install opencv-python inference-sdk
 
-Set ROBOFLOW_API_KEY as an environment variable before running.
+Set ROBOFLOW_API_KEY in your .env file or as an environment variable before running.
 
 Usage:
     python webcam_demo.py
@@ -12,28 +12,29 @@ Usage:
 import os
 import threading
 import time
-
 import cv2
-from inference_sdk import InferenceHTTPClient, InferenceConfiguration
+from dotenv import load_dotenv
+from inference_sdk import InferenceHTTPClient
 
-API_KEY = os.environ.get("ROBOFLOW_API_KEY", "YOUR_API_KEY")
+# Tải biến môi trường từ file .env (chứa ROBOFLOW_API_KEY)
+load_dotenv()
+API_KEY = os.environ.get("ROBOFLOW_API_KEY")
 
-WORKSPACE_NAME = "dakbuns-workspace"
-WORKFLOW_ID = "american-sign-language-letters-vamerican-sign-language-letters-bpoi9-1-rfdetr-large-t1-logic"
+# THAY ĐỔI 1: Cấu hình Model Classification thay cho Workflow
+MODEL_ID = "sign-language-2c6kk/2"
 
-INFER_INTERVAL_SECONDS = 1.0
-CONFIDENCE_THRESHOLD = 0.3
+INFER_INTERVAL_SECONDS = 0.5 # Gửi ảnh lên server mỗi 0.5s cho mượt
+CONFIDENCE_THRESHOLD = 0.4   # Ngưỡng tin cậy 40%
 
 
 class InferenceWorker:
-    """Runs run_workflow() calls on a background thread so the video loop
-    never blocks waiting on the network."""
+    """Chạy API infer() trên background thread để webcam không bị giật lag."""
 
     def __init__(self, client):
         self.client = client
         self.lock = threading.Lock()
         self.pending_frame = None
-        self.predictions = []
+        self.prediction = None  # Phân loại ảnh chỉ trả về 1 kết quả duy nhất
         self.running = True
         self.thread = threading.Thread(target=self._loop, daemon=True)
         self.thread.start()
@@ -42,9 +43,9 @@ class InferenceWorker:
         with self.lock:
             self.pending_frame = frame.copy()
 
-    def get_predictions(self):
+    def get_prediction(self):
         with self.lock:
-            return self.predictions
+            return self.prediction
 
     def stop(self):
         self.running = False
@@ -55,67 +56,78 @@ class InferenceWorker:
             with self.lock:
                 frame = self.pending_frame
                 self.pending_frame = None
+                
             if frame is None:
                 time.sleep(0.05)
                 continue
+                
             try:
-                result = self.client.run_workflow(
-                    workspace_name=WORKSPACE_NAME,
-                    workflow_id=WORKFLOW_ID,
-                    images={"image": frame},
-                    use_cache=True,
-                )
-                raw_preds = result[0]["predictions"]["predictions"]
-                preds = [p for p in raw_preds if p["confidence"] >= CONFIDENCE_THRESHOLD]
+                # THAY ĐỔI 2: Gọi hàm infer() của Classification thay vì run_workflow
+                result = self.client.infer(frame, model_id=MODEL_ID)
+                
+                # Bóc tách kết quả của Classification (chỉ lấy Top 1)
+                top_class = result.get("top", "Unknown")
+                confidence = result.get("confidence", 0.0)
+
                 with self.lock:
-                    self.predictions = preds
+                    if confidence >= CONFIDENCE_THRESHOLD:
+                        self.prediction = {"class": top_class, "confidence": confidence}
+                    else:
+                        self.prediction = None
             except Exception as e:
-                print(f"Inference error: {e}")
+                print(f"Lỗi Inference: {e}")
 
 
-def draw_predictions(frame, predictions):
-    for pred in predictions:
-        x, y, w, h = pred["x"], pred["y"], pred["width"], pred["height"]
-        x1, y1 = int(x - w / 2), int(y - h / 2)
-        x2, y2 = int(x + w / 2), int(y + h / 2)
-        label = f'{pred["class"]} {pred["confidence"]:.0%}'
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        cv2.putText(frame, label, (x1, max(y1 - 10, 0)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+def draw_prediction(frame, prediction):
+    # THAY ĐỔI 3: Không còn tọa độ x,y,w,h. Chỉ in Text lên góc màn hình.
+    if prediction:
+        label = f'{prediction["class"]}: {prediction["confidence"]:.0%}'
+        
+        # Vẽ nền đen mờ
+        cv2.rectangle(frame, (10, 10), (300, 60), (0, 0, 0), -1)
+        # Viết chữ
+        cv2.putText(frame, label, (20, 45),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3, cv2.LINE_AA)
 
 
 def main():
-    if API_KEY == "YOUR_API_KEY":
-        raise SystemExit("Set ROBOFLOW_API_KEY first (https://app.roboflow.com/settings/api)")
+    if not API_KEY:
+        raise SystemExit("Lỗi: Không tìm thấy ROBOFLOW_API_KEY. Hãy kiểm tra lại file .env")
 
+    # Khởi tạo Client cho Classification API
     client = InferenceHTTPClient(
-        api_url="https://serverless.roboflow.com",
+        api_url="https://classify.roboflow.com", 
         api_key=API_KEY,
-    ).configure(InferenceConfiguration(api_key_transport="header"))
+    )
 
     worker = InferenceWorker(client)
 
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
-        raise RuntimeError("Could not open webcam (index 0). Try 1 if you have more than one camera.")
+        raise RuntimeError("Không thể mở webcam (index 0).")
 
     last_submit_time = 0.0
 
-    print("Running. Press 'q' in the video window to quit.")
+    print(f"🚀 Đang chạy dự án: {MODEL_ID}")
+    print("Nhấn phím 'q' trong cửa sổ video để thoát.")
+    
     try:
         while True:
             ok, frame = cap.read()
             if not ok:
-                print("Failed to read frame from webcam.")
+                print("Lỗi không đọc được khung hình từ webcam.")
                 break
+                
+            # Lật ngược ảnh để giống như đang soi gương
+            frame = cv2.flip(frame, 1)
 
             now = time.time()
             if now - last_submit_time >= INFER_INTERVAL_SECONDS:
                 last_submit_time = now
                 worker.submit(frame)
 
-            draw_predictions(frame, worker.get_predictions())
-            cv2.imshow("ASL Letter Recognition (press q to quit)", frame)
+            draw_prediction(frame, worker.get_prediction())
+            cv2.imshow("Sign Language Classification - ResNet34", frame)
 
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
@@ -127,5 +139,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-

@@ -14,3 +14,4 @@ sample_*.txt
 *.task
 *.zip
 mp_experiment/results/undetected_samples/
+my_data/

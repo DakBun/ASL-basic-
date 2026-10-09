@@ -38,7 +38,7 @@ import extract_landmarks_v2 as ext  # noqa: E402  (main guard, import-safe)
 # --- constants (no config system) ---
 DATASET = "E:/ASL/kaggle_sample"
 MP_DIR = "E:/ASL/mp_experiment"
-MODEL_NAME = "mp_model_v2.joblib"
+MODEL_NAME = "mp_model_v3.joblib"
 CANON_LABEL = "Right"
 TOP_K = 3
 SEED = 42
